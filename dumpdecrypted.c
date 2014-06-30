@@ -44,7 +44,7 @@ struct ProgramVars {
 
 __attribute__((constructor))
 void dumptofile(int argc, const char **argv, const char **envp, const char **apple, struct ProgramVars *pvars)
-{	
+{
 	struct load_command *lc;
 	struct encryption_info_command *eic;
 	struct fat_header *fh;
@@ -53,21 +53,33 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 	char buffer[1024];
 	char rpath[4096],npath[4096]; /* should be big enough for PATH_MAX */
 	unsigned int fileoffs = 0, off_cryptid = 0, restsize;
-	int i,fd,outfd,r,n,toread;
+	int i,fd,outfd,r,n,toread,lc_encryption_info=0;
 	char *tmp;
-	
+
 	printf("mach-o decryption dumper\n\n");
-		
+
 	printf("DISCLAIMER: This tool is only meant for security research purposes, not for application crackers.\n\n");
-	/* searching all load commands for an LC_ENCRYPTION_INFO load command */
-	lc = (struct load_command *)((unsigned char *)pvars->mh + sizeof(struct mach_header));
-		
+	/* searching all load commands for an LC_ENCRYPTION_INFO or LC_ENCRYPTION_INFO_64 load command */
+
+	// Is it a 64 bits binary ?
+	if (pvars->mh->magic == MH_MAGIC_64) {
+		printf("[+] Detected 64 bits binary\n");
+		lc_encryption_info = LC_ENCRYPTION_INFO_64;
+		lc = (struct load_command *)((unsigned char *)pvars->mh + sizeof(struct mach_header_64));
+	}
+	else {
+		printf("[+] Detected 32 bits binary\n");
+		lc_encryption_info = LC_ENCRYPTION_INFO;
+		lc = (struct load_command *)((unsigned char *)pvars->mh + sizeof(struct mach_header));
+	}
+
+
 	for (i=0; i<pvars->mh->ncmds; i++) {
-		/*printf("Load Command (%d): %08x\n", i, lc->cmd);*/
-		
-		if (lc->cmd == LC_ENCRYPTION_INFO) {
+		//printf("Load Command (%d): %08x\n", i, lc->cmd);
+
+		if (lc->cmd == lc_encryption_info) {
 			eic = (struct encryption_info_command *)lc;
-			
+
 			/* If this load command is present, but data is not crypted then exit */
 			if (eic->cryptid == 0) {
 				break;
@@ -76,27 +88,27 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 			printf("[+] offset to cryptid found: @%p(from %p) = %x\n", &eic->cryptid, pvars->mh, off_cryptid);
 
 			printf("[+] Found encrypted data at address %08x of length %u bytes - type %u.\n", eic->cryptoff, eic->cryptsize, eic->cryptid);
-			
+
 			if (realpath(argv[0], rpath) == NULL) {
 				strlcpy(rpath, argv[0], sizeof(rpath));
 			}
-			
+
 			printf("[+] Opening %s for reading.\n", rpath);
 			fd = open(rpath, O_RDONLY);
 			if (fd == -1) {
 				printf("[-] Failed opening.\n");
 				_exit(1);
 			}
-			
+
 			printf("[+] Reading header\n");
 			n = read(fd, (void *)buffer, sizeof(buffer));
 			if (n != sizeof(buffer)) {
 				printf("[W] Warning read only %d bytes\n", n);
 			}
-			
+
 			printf("[+] Detecting header type\n");
 			fh = (struct fat_header *)buffer;
-			
+
 			/* Is this a FAT file - we assume the right endianess */
 			if (fh->magic == FAT_CIGAM) {
 				printf("[+] Executable is a FAT image - searching for right architecture\n");
@@ -135,7 +147,7 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 			if (outfd == -1) {
 				if (strncmp("/private/var/mobile/Applications/", rpath, 33) == 0) {
 					printf("[-] Failed opening. Most probably a sandbox issue. Trying something different.\n");
-					
+
 					/* create new name */
 					strlcpy(npath, "/private/var/mobile/Applications/", sizeof(npath));
 					tmp = strchr(rpath+33, '/');
@@ -157,13 +169,13 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 					_exit(1);
 				}
 			}
-			
+
 			/* calculate address of beginning of crypted data */
 			n = fileoffs + eic->cryptoff - 0x1000; /* we assume header is normally at 0x1000 */
-			
-			restsize = lseek(fd, 0, SEEK_END) - n - eic->cryptsize;			
+
+			restsize = lseek(fd, 0, SEEK_END) - n - eic->cryptsize;
 			lseek(fd, 0, SEEK_SET);
-			
+
 			printf("[+] Copying the not encrypted start of the file\n");
 			/* first copy all the data before the encrypted data */
 			while (n > 0) {
@@ -174,14 +186,14 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 					_exit(1);
 				}
 				n -= r;
-				
+
 				r = write(outfd, buffer, toread);
 				if (r != toread) {
 					printf("[-] Error writing file\n");
 					_exit(1);
 				}
 			}
-			
+
 			/* now write the previously encrypted data */
 			printf("[+] Dumping the decrypted data into the file\n");
 			r = write(outfd, (unsigned char *)pvars->mh + eic->cryptoff - 0x1000, eic->cryptsize);
@@ -189,7 +201,7 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 				printf("[-] Error writing file\n");
 				_exit(1);
 			}
-			
+
 			/* and finish with the remainder of the file */
 			n = restsize;
 			lseek(fd, eic->cryptsize, SEEK_CUR);
@@ -202,7 +214,7 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 					_exit(1);
 				}
 				n -= r;
-				
+
 				r = write(outfd, buffer, toread);
 				if (r != toread) {
 					printf("[-] Error writing file\n");
@@ -223,11 +235,11 @@ void dumptofile(int argc, const char **argv, const char **envp, const char **app
 			close(fd);
 			printf("[+] Closing dump file\n");
 			close(outfd);
-			
+
 			_exit(1);
 		}
-		
-		lc = (struct load_command *)((unsigned char *)lc+lc->cmdsize);		
+
+		lc = (struct load_command *)((unsigned char *)lc+lc->cmdsize);
 	}
 	printf("[-] This mach-o file is not encrypted. Nothing was decrypted.\n");
 	_exit(1);
